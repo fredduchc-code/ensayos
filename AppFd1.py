@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import io
-import numpy as np
 
 # Configuración de la página web
 st.set_page_config(page_title="Procesador de Tendencias", layout="centered")
@@ -24,32 +23,33 @@ if uploaded_file is not None:
         # Forzar a que la primera columna de la izquierda sea nuestra columna de tiempo
         df_fuente.rename(columns={df_fuente.columns[0]: 'Fecha'}, inplace=True)
 
-        # 4. Convertir la columna Fecha de manera flexible (ideal para detectar medianoches)
+        # 4. TRATAMIENTO ULTRA-SEGURO DE FECHAS
+        df_fuente['Fecha'] = df_fuente['Fecha'].astype(str).str.strip()
         df_fuente['Fecha'] = pd.to_datetime(df_fuente['Fecha'], dayfirst=True, errors='coerce')
             
-        # Eliminamos filas donde la fecha REALMENTE esté vacía
+        # Eliminamos filas donde la fecha esté vacía o rota
         df_fuente = df_fuente.dropna(subset=['Fecha'])
         
         if len(df_fuente) == 0:
-            st.error("Error: Python no pudo interpretar las fechas de la primera columna. Verificá el formato.")
+            st.error("Error crítico: No se pudieron interpretar las fechas del archivo. Revisá que la primera columna contenga datos válidos de Fecha y Hora.")
             st.stop()
             
-        # Ordenamos cronológicamente la fuente antes de procesar los sensores
+        # Ordenamos cronológicamente la fuente
         df_fuente = df_fuente.sort_values('Fecha')
         
-        # !!! LIMPIEZA DE CELDAS CON TEXTO VACÍO CORREGIDA !!!
-        # Reemplazamos celdas que tengan espacios o cadenas vacías por NaN reales de numpy
-        df_fuente.replace(r'^\s*$', np.nan, regex=True, inplace=True)
+        # !!! LIMPIEZA DE VACÍOS DE EXCEL !!!
+        df_fuente = df_fuente.replace(r'^\s*$', pd.NA, regex=True)
         
-        # Ahora sí, rellenamos los vacíos internos de los sensores en orden vertical
+        # Rellenamos los vacíos internos de los sensores en orden vertical (arrastre)
         df_fuente.ffill(inplace=True)
         df_fuente.fillna(0, inplace=True)
 
-        # 5. REDONDEO COMPATIBLE A 10 MINUTOS 
-        df_fuente['Fecha'] = df_fuente['Fecha'].dt.to_period('10T').dt.to_timestamp()
+        # 5. REDONDEO DE TIEMPO UNIVERSAL (Cada 10 minutos)
+        # CORRECCIÓN: Cambiamos '10T' por '10min' para compatibilidad con Pandas nuevo
+        df_fuente['Fecha'] = df_fuente['Fecha'].dt.to_period('10min').dt.to_timestamp()
         
-        # Agrupamos por minuto quedándonos con la última actualización de cada bloque de 10 min
-        df_fuente = df_fuente.groupby('Fecha').last().reset_index()
+        # Eliminamos duplicados de fecha dejando el ÚLTIMO registro de ese bloque de 10 minutos
+        df_fuente = df_fuente.drop_duplicates(subset=['Fecha'], keep='last')
 
         # 6. CREAR LA GRILLA COMPLETA DE TODO EL AÑO (Cada 10 minutos)
         an_datos = int(df_fuente['Fecha'].dt.year.max())
@@ -57,13 +57,14 @@ if uploaded_file is not None:
         inicio_ano = f"{an_datos}-01-01 00:00:00"
         fin_ano = f"{an_datos}-12-31 23:50:00"
         
+        # CORRECCIÓN: También usamos '10min' aquí por seguridad
         grilla_temporal = pd.date_range(start=inicio_ano, end=fin_ano, freq='10min')
         df_resultado = pd.DataFrame({'Fecha': grilla_temporal})
         
-        # 7. CRUCE DE DATOS E INTERPOLACIÓN FINAL (BuscarV en memoria)
+        # 7. CRUCE DE DATOS E INTERPOLACIÓN FINAL (Mapeo estilo BuscarV)
         df_resultado = pd.merge(df_resultado, df_fuente, on='Fecha', how='left')
         
-        # Volvemos a aplicar ffill para cubrir las nuevas filas de 10 min creadas por la grilla
+        # Volvemos a aplicar ffill para cubrir los minutos nuevos creados por la grilla vacía
         df_resultado.ffill(inplace=True)
         df_resultado.fillna(0, inplace=True)
         
