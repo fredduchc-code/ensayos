@@ -23,7 +23,7 @@ if uploaded_file is not None:
         # Forzar a que la primera columna de la izquierda sea nuestra columna de tiempo
         df_fuente.rename(columns={df_fuente.columns[0]: 'Fecha'}, inplace=True)
 
-        # 4. TRATAMIENTO SEGURO DE FECHAS Y REDONDEO DE SEGUNDOS A CERO
+        # 4. TRATAMIENTO SEGURO Y REDONDEO DIRECTO A CADENCIA DE 10 MINUTOS
         df_fuente['Fecha'] = df_fuente['Fecha'].astype(str).str.strip()
         df_fuente['Fecha'] = pd.to_datetime(df_fuente['Fecha'], dayfirst=True, errors='coerce')
         df_fuente = df_fuente.dropna(subset=['Fecha'])
@@ -32,8 +32,8 @@ if uploaded_file is not None:
             st.error("Error crítico: No se pudieron interpretar las fechas del archivo.")
             st.stop()
             
-        # !!! PROPUESTA GANADORA: Aplanamos los segundos a :00 (Redondeo al minuto entero) !!!
-        df_fuente['Fecha'] = df_fuente['Fecha'].dt.floor('min')
+        # !!! EL GRAN TRUCO: Redondeamos directamente a los 10 minutos más cercanos !!!
+        df_fuente['Fecha'] = df_fuente['Fecha'].dt.round('10min')
             
         # 5. LIMPIEZA DE TEXTOS VACÍOS EN SENSORES
         for col in df_fuente.columns:
@@ -45,7 +45,7 @@ if uploaded_file is not None:
         # Ordenamos cronológicamente
         df_fuente = df_fuente.sort_values('Fecha')
         
-        # !!! COMBINAR TRANSICIONES: Agrupamos por el minuto ya redondeado quedándonos con el último cambio !!!
+        # Combinamos registros que caigan en el mismo bloque de 10 minutos quedándonos con el último
         df_fuente = df_fuente.groupby('Fecha').last().reset_index()
 
         # 6. CREAR LA GRILLA COMPLETA DE TODO EL AÑO (Cada 10 minutos)
@@ -53,44 +53,40 @@ if uploaded_file is not None:
         inicio_ano = f"{an_datos}-01-01 00:00:00"
         fin_ano = f"{an_datos}-12-31 23:50:00"
         grilla_temporal = pd.date_range(start=inicio_ano, end=fin_ano, freq='10min')
+        df_resultado = pd.DataFrame({'Fecha': grilla_temporal})
         
-        # 7. MAPEO CON REINDEX (Ahora sobre índices limpios sin segundos raros)
-        df_fuente.set_index('Fecha', inplace=True)
-        indice_completo = grilla_temporal.union(df_fuente.index)
-        df_procesado = df_fuente.reindex(indice_completo)
+        # 7. CRUCE DIRECTO CON LA GRILLA ANUAL (BuscarV Perfecto)
+        # Como ambos están en bloques exactos de 10 minutos, el cruce es directo y sin fallas
+        df_final = pd.merge(df_resultado, df_fuente, on='Fecha', how='left')
         
-        # Arrastre vertical de los sensores
-        columnas_sensores = df_procesado.columns.tolist()
-        df_procesado[columnas_sensores] = df_procesado[columnas_sensores].ffill().fillna(0)
-        
-        # 8. FILTRADO FINAL A LA CADENCIA DE 10 MINUTOS
-        df_final = df_procesado.loc[grilla_temporal].reset_index()
-        df_final.rename(columns={'index': 'Fecha'}, inplace=True)
+        # Arrastre vertical estricto a lo largo de las 52.560 filas del año
+        columnas_sensores = [col for col in df_final.columns if col != 'Fecha']
+        df_final[columnas_sensores] = df_final[columnas_sensores].ffill().fillna(0)
 
-        # 9. Forzar valores a enteros limpios (0 o 1)
+        # 8. Forzar valores a enteros limpios (0 o 1)
         for col in columnas_sensores:
             df_final[col] = df_final[col].astype(float).astype(int)
         
-        # 10. LÓGICA DE DETECCIÓN DE CAMBIOS DE ESTADO (TESTIGO)
+        # 9. LÓGICA DE DETECCIÓN DE CAMBIOS DE ESTADO (TESTIGO)
         hubo_cambio = df_final[columnas_sensores].diff().fillna(0) != 0
         df_final['Cambio'] = hubo_cambio.any(axis=1).map({True: 1, False: ""})
-        df_final.loc[0, 'Cambio'] = "" 
+        df_final.loc[0, 'Cambio'] = "" # Limpiar fila inicial
 
-        # 11. FORMATO LATINO CON SEGUNDOS EN 00
+        # 10. FORMATO LATINO CON SEGUNDOS EN 00
         df_final['Fecha'] = df_final['Fecha'].dt.strftime('%d/%m/%Y %H:%M:00')
 
-        # 12. Mostrar vista previa en Streamlit
-        st.subheader("Vista previa del Resultado Regularizado (Segundos Clavados):")
+        # 11. Mostrar vista previa en Streamlit
+        st.subheader("Vista previa del Resultado Regularizado (Redondeo de Fuente a 10 min):")
         st.dataframe(df_final.head(20))
         st.info(f"Total de filas generadas para el año {an_datos}: {len(df_final):,}")
         
-        # 13. Crear el archivo Excel de salida
+        # 12. Crear el archivo Excel de salida
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df_final.to_excel(writer, sheet_name='Resultado', index=False)
         bytes_data = output.getvalue()
         
-        # 14. Botón de descarga
+        # 13. Botón de descarga
         st.download_button(
             label="📥 Descargar Excel Resultado",
             data=bytes_data,
