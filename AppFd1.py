@@ -21,7 +21,7 @@ if uploaded_file is not None:
         df_fuente.columns = df_fuente.columns.str.strip().str.replace('"', '')
         df_fuente.rename(columns={df_fuente.columns[0]: 'Fecha'}, inplace=True)
 
-        # 4. LEER LA FUENTE EN FORMATO LATINO Y FIJAR SEGUNDOS EN 00
+        # 4. TRATAMIENTO SEGURO DE FECHAS (LLEVANDO SEGUNDOS A :00 EXACTOS)
         df_fuente['Fecha'] = df_fuente['Fecha'].astype(str).str.strip()
         df_fuente['Fecha'] = pd.to_datetime(
             df_fuente['Fecha'], 
@@ -35,24 +35,27 @@ if uploaded_file is not None:
             st.error("Error crítico: No se pudieron interpretar las fechas del archivo.")
             st.stop()
             
-        # !!! TU PROPUESTA: Llevamos los segundos a :00 truncando al bloque de 10 min de forma fija !!!
-        df_fuente['Fecha'] = df_fuente['Fecha'].dt.floor('10min')
+        # Forzamos los segundos a :00 de manera estricta (Truncamos al minuto exacto)
+        df_fuente['Fecha'] = df_fuente['Fecha'].dt.floor('min')
             
         # 5. LIMPIEZA DE TEXTOS VACÍOS EN SENSORES
-        for col in df_fuente.columns:
-            if col != 'Fecha':
-                df_fuente[col] = df_fuente[col].astype(str).str.strip()
-                df_fuente[col] = df_fuente[col].replace(['', 'nan', 'NaN', 'None', ','], pd.NA)
-                df_fuente[col] = pd.to_numeric(df_fuente[col], errors='coerce')
+        columnas_sensores = [col for col in df_fuente.columns if col != 'Fecha']
+        for col in columnas_sensores:
+            df_fuente[col] = df_fuente[col].astype(str).str.strip()
+            df_fuente[col] = df_fuente[col].replace(['', 'nan', 'NaN', 'None', ','], pd.NA)
+            df_fuente[col] = pd.to_numeric(df_fuente[col], errors='coerce')
 
-        # Ordenamos cronológicamente antes de agrupar
+        # Ordenamos cronológicamente de forma estricta la fuente ANTES de procesar
         df_fuente = df_fuente.sort_values('Fecha').reset_index(drop=True)
         
-        # Hacemos un arrastre inicial en la fuente para que no se pierdan estados previos
-        columnas_sensores = [col for col in df_fuente.columns if col != 'Fecha']
+        # !!! EL BLINDAJE ANTI-PÉRDIDAS !!!
+        # Hacemos el arrastre vertical dentro de la fuente para asegurar que ningún NaN pise un cambio de estado válido
         df_fuente[columnas_sensores] = df_fuente[columnas_sensores].ffill().fillna(0)
         
-        # Agrupamos por la nueva fecha fija de 10 minutos, quedándonos con el último cambio real
+        # Ahora que está arrastrado, redondeamos al bloque de 10 minutos
+        df_fuente['Fecha'] = df_fuente['Fecha'].dt.round('10min')
+        
+        # Agrupamos por la marca de 10 min quedándonos de forma segura con la última foto real del estado
         df_fuente = df_fuente.groupby('Fecha').last().reset_index()
 
         # 6. ACOTACIÓN DINÁMICA AL MES Y AÑO DE LA FUENTE
@@ -70,10 +73,10 @@ if uploaded_file is not None:
                          7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
         nombre_mes_actual = meses_nombres.get(mes_datos, "Mes Detectado")
 
-        # 7. CRUCE DIRECTO CON LA GRILLA ANUAL (BuscarV Perfecto sobre horas fijas)
+        # 7. CRUCE DIRECTO CON LA GRILLA REGULAR
         df_final = pd.merge(df_resultado, df_fuente, on='Fecha', how='left')
         
-        # Arrastre vertical final sobre la grilla para cubrir los baches de 10 minutos intermedios
+        # Arrastre vertical final sobre la grilla anual para rellenar los baches de 10 min vacíos
         df_final[columnas_sensores] = df_final[columnas_sensores].ffill().fillna(0)
 
         # 8. Forzar valores a enteros limpios (0 o 1)
@@ -85,11 +88,11 @@ if uploaded_file is not None:
         df_final['Cambio'] = hubo_cambio.any(axis=1).map({True: 1, False: ""})
         df_final.loc[0, 'Cambio'] = "" 
 
-        # 10. FORMATO LATINO CON SEGUNDOS EN 00 PARA EXCEL
+        # 10. FORMATO LATINO FINAL CON SEGUNDOS EN 00 FORZADOS
         df_final['Fecha'] = df_final['Fecha'].dt.strftime('%d/%m/%Y %H:%M:00')
 
         # 11. Mostrar vista previa en Streamlit
-        st.subheader(f"Vista previa del Resultado (Acotado a {nombre_mes_actual} {an_datos}):")
+        st.subheader(f"Vista previa del Resultado Correjido (Acotado a {nombre_mes_actual} {an_datos}):")
         st.dataframe(df_final.head(20))
         st.info(f"Total de filas generadas para {nombre_mes_actual}: {len(df_final):,}")
         
