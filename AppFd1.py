@@ -23,7 +23,7 @@ if uploaded_file is not None:
         # Forzar a que la primera columna de la izquierda sea nuestra columna de tiempo
         df_fuente.rename(columns={df_fuente.columns[0]: 'Fecha'}, inplace=True)
 
-        # 4. TRATAMIENTO SEGURO DE FECHAS EN LA FUENTE
+        # 4. TRATAMIENTO SEGURO DE FECHAS Y REDONDEO DE SEGUNDOS A CERO
         df_fuente['Fecha'] = df_fuente['Fecha'].astype(str).str.strip()
         df_fuente['Fecha'] = pd.to_datetime(df_fuente['Fecha'], dayfirst=True, errors='coerce')
         df_fuente = df_fuente.dropna(subset=['Fecha'])
@@ -32,6 +32,9 @@ if uploaded_file is not None:
             st.error("Error crítico: No se pudieron interpretar las fechas del archivo.")
             st.stop()
             
+        # !!! PROPUESTA GANADORA: Aplanamos los segundos a :00 (Redondeo al minuto entero) !!!
+        df_fuente['Fecha'] = df_fuente['Fecha'].dt.floor('min')
+            
         # 5. LIMPIEZA DE TEXTOS VACÍOS EN SENSORES
         for col in df_fuente.columns:
             if col != 'Fecha':
@@ -39,9 +42,11 @@ if uploaded_file is not None:
                 df_fuente[col] = df_fuente[col].replace(['', 'nan', 'NaN', 'None', ','], pd.NA)
                 df_fuente[col] = pd.to_numeric(df_fuente[col], errors='coerce')
 
-        # Ordenamos cronológicamente y eliminamos duplicados exactos en la fuente
+        # Ordenamos cronológicamente
         df_fuente = df_fuente.sort_values('Fecha')
-        df_fuente = df_fuente.drop_duplicates(subset=['Fecha'], keep='last')
+        
+        # !!! COMBINAR TRANSICIONES: Agrupamos por el minuto ya redondeado quedándonos con el último cambio !!!
+        df_fuente = df_fuente.groupby('Fecha').last().reset_index()
 
         # 6. CREAR LA GRILLA COMPLETA DE TODO EL AÑO (Cada 10 minutos)
         an_datos = int(df_fuente['Fecha'].dt.year.max())
@@ -49,7 +54,7 @@ if uploaded_file is not None:
         fin_ano = f"{an_datos}-12-31 23:50:00"
         grilla_temporal = pd.date_range(start=inicio_ano, end=fin_ano, freq='10min')
         
-        # 7. MAPEO ULTRA-ROBUSTO CON REINDEX
+        # 7. MAPEO CON REINDEX (Ahora sobre índices limpios sin segundos raros)
         df_fuente.set_index('Fecha', inplace=True)
         indice_completo = grilla_temporal.union(df_fuente.index)
         df_procesado = df_fuente.reindex(indice_completo)
@@ -71,11 +76,11 @@ if uploaded_file is not None:
         df_final['Cambio'] = hubo_cambio.any(axis=1).map({True: 1, False: ""})
         df_final.loc[0, 'Cambio'] = "" 
 
-        # 11. !!! FORMATO LATINO CON SEGUNDOS EN 00 FOSFATADOS !!!
+        # 11. FORMATO LATINO CON SEGUNDOS EN 00
         df_final['Fecha'] = df_final['Fecha'].dt.strftime('%d/%m/%Y %H:%M:00')
 
         # 12. Mostrar vista previa en Streamlit
-        st.subheader("Vista previa del Resultado Regularizado (Segundos :00):")
+        st.subheader("Vista previa del Resultado Regularizado (Segundos Clavados):")
         st.dataframe(df_final.head(20))
         st.info(f"Total de filas generadas para el año {an_datos}: {len(df_final):,}")
         
