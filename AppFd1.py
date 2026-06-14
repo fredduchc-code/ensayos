@@ -32,38 +32,35 @@ if uploaded_file is not None:
             st.error("Error crítico: No se pudieron interpretar las fechas del archivo.")
             st.stop()
             
-        # 5. LIMPIEZA AGRESIVA DE TEXTOS VACÍOS EN SENSORES
+        # 5. LIMPIEZA DE TEXTOS VACÍOS EN SENSORES
         for col in df_fuente.columns:
             if col != 'Fecha':
                 df_fuente[col] = df_fuente[col].astype(str).str.strip()
                 df_fuente[col] = df_fuente[col].replace(['', 'nan', 'NaN', 'None', ','], pd.NA)
                 df_fuente[col] = pd.to_numeric(df_fuente[col], errors='coerce')
 
+        # Ordenamos cronológicamente y eliminamos duplicados exactos en la fuente
+        df_fuente = df_fuente.sort_values('Fecha')
+        df_fuente = df_fuente.drop_duplicates(subset=['Fecha'], keep='last')
+
         # 6. CREAR LA GRILLA COMPLETA DE TODO EL AÑO (Cada 10 minutos)
         an_datos = int(df_fuente['Fecha'].dt.year.max())
         inicio_ano = f"{an_datos}-01-01 00:00:00"
         fin_ano = f"{an_datos}-12-31 23:50:00"
         grilla_temporal = pd.date_range(start=inicio_ano, end=fin_ano, freq='10min')
-        df_resultado = pd.DataFrame({'Fecha': grilla_temporal})
         
-        # 7. NUEVA LÓGICA DE CRUCE CRONOLÓGICO SEGURO
-        # Combinamos las fechas exactas de la fuente con la grilla de 10 min
-        df_combinado = pd.concat([df_resultado, df_fuente], ignore_index=True)
+        # 7. MAPEO ULTRA-ROBUSTO CON REINDEX
+        df_fuente.set_index('Fecha', inplace=True)
+        indice_completo = grilla_temporal.union(df_fuente.index)
+        df_procesado = df_fuente.reindex(indice_completo)
         
-        # Ordenamos todo por fecha de forma estricta para que los eventos queden en su lugar real del tiempo
-        df_combinado = df_combinado.sort_values('Fecha').reset_index(drop=True)
+        # Arrastre vertical de los sensores
+        columnas_sensores = df_procesado.columns.tolist()
+        df_procesado[columnas_sensores] = df_procesado[columnas_sensores].ffill().fillna(0)
         
-        # Aplicamos el arrastre (ffill) sobre las horas reales y exactas de los sensores
-        columnas_sensores = [col for col in df_combinado.columns if col != 'Fecha']
-        df_combinado[columnas_sensores] = df_combinado[columnas_sensores].ffill()
-        df_combinado[columnas_sensores] = df_combinado[columnas_sensores].fillna(0)
-        
-        # 8. FILTRAR Y QUEDARNOS SOLO CON LOS MINUTOS EXACTOS DE LA GRILLA (Cada 10 minutos fijos)
-        # Hacemos un merge 'left' usando la grilla vacía contra el mapa combinado que ya tiene los estados arrastrados
-        df_final = pd.merge(df_resultado, df_combinado, on='Fecha', how='left')
-        
-        # Por si algún punto exacto de la grilla quedó vacío por milisegundos, aseguramos el último ffill
-        df_final[columnas_sensores] = df_final[columnas_sensores].ffill().fillna(0)
+        # 8. FILTRADO FINAL A LA CADENCIA DE 10 MINUTOS
+        df_final = df_procesado.loc[grilla_temporal].reset_index()
+        df_final.rename(columns={'index': 'Fecha'}, inplace=True)
 
         # 9. Forzar valores a enteros limpios (0 o 1)
         for col in columnas_sensores:
@@ -72,13 +69,13 @@ if uploaded_file is not None:
         # 10. LÓGICA DE DETECCIÓN DE CAMBIOS DE ESTADO (TESTIGO)
         hubo_cambio = df_final[columnas_sensores].diff().fillna(0) != 0
         df_final['Cambio'] = hubo_cambio.any(axis=1).map({True: 1, False: ""})
-        df_final.loc[0, 'Cambio'] = "" # Limpiar fila inicial
+        df_final.loc[0, 'Cambio'] = "" 
 
-        # 11. Convertir las fechas a texto en formato LATINO para Excel
-        df_final['Fecha'] = df_final['Fecha'].dt.strftime('%d/%m/%Y %H:%M:%S')
+        # 11. !!! FORMATO LATINO CON SEGUNDOS EN 00 FOSFATADOS !!!
+        df_final['Fecha'] = df_final['Fecha'].dt.strftime('%d/%m/%Y %H:%M:00')
 
         # 12. Mostrar vista previa en Streamlit
-        st.subheader("Vista previa del Resultado Correjido (Cambios detectados):")
+        st.subheader("Vista previa del Resultado Regularizado (Segundos :00):")
         st.dataframe(df_final.head(20))
         st.info(f"Total de filas generadas para el año {an_datos}: {len(df_final):,}")
         
