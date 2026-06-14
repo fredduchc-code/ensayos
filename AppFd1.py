@@ -21,7 +21,7 @@ if uploaded_file is not None:
         df_fuente.columns = df_fuente.columns.str.strip().str.replace('"', '')
         df_fuente.rename(columns={df_fuente.columns[0]: 'Fecha'}, inplace=True)
 
-        # 4. LEER LA FUENTE EN FORMATO LATINO
+        # 4. LEER LA FUENTE EN FORMATO LATINO MANTENIENDO HORAS EXACTAS
         df_fuente['Fecha'] = df_fuente['Fecha'].astype(str).str.strip()
         df_fuente['Fecha'] = pd.to_datetime(
             df_fuente['Fecha'], 
@@ -29,16 +29,11 @@ if uploaded_file is not None:
             errors='coerce', 
             format='mixed'
         )
-        
-        # Eliminamos filas donde la fecha no se haya podido interpretar
         df_fuente = df_fuente.dropna(subset=['Fecha'])
         
         if len(df_fuente) == 0:
             st.error("Error crítico: No se pudieron interpretar las fechas del archivo.")
             st.stop()
-            
-        # Redondeamos directamente a los 10 minutos más cercanos
-        df_fuente['Fecha'] = df_fuente['Fecha'].dt.round('10min')
             
         # 5. LIMPIEZA DE TEXTOS VACÍOS EN SENSORES
         for col in df_fuente.columns:
@@ -47,40 +42,39 @@ if uploaded_file is not None:
                 df_fuente[col] = df_fuente[col].replace(['', 'nan', 'NaN', 'None', ','], pd.NA)
                 df_fuente[col] = pd.to_numeric(df_fuente[col], errors='coerce')
 
-        # Ordenamos cronológicamente de forma estricta la fuente
+        # Ordenamos de forma estricta por fecha para que funcione el merge_asof
         df_fuente = df_fuente.sort_values('Fecha').reset_index(drop=True)
         
-        # Rellenamos los vacíos internos de la fuente original (Mantenemos la memoria de estados)
+        # Completamos valores vacíos internos en la propia fuente original primero
         columnas_sensores = [col for col in df_fuente.columns if col != 'Fecha']
         df_fuente[columnas_sensores] = df_fuente[columnas_sensores].ffill().fillna(0)
-        
-        # Agrupamos por si el redondeo generó duplicados en el mismo bloque
-        df_fuente = df_fuente.groupby('Fecha').last().reset_index()
 
-        # 6. !!! NUEVA LÓGICA: ACOTACIÓN DINÁMICA AL MES Y AÑO DE LA FUENTE !!!
-        # Detectamos el año y mes predominante de los datos cargados
+        # 6. ACOTACIÓN DINÁMICA AL MES Y AÑO DE LA FUENTE
         fecha_base = df_fuente['Fecha'].iloc[0]
         an_datos = fecha_base.year
         mes_datos = fecha_base.month
         
-        # Creamos el inicio del mes (Día 1 a las 00:00:00) y el final exacto de ese mismo mes (a las 23:50:00)
         inicio_mes = pd.Timestamp(year=an_datos, month=mes_datos, day=1, hour=0, minute=0, second=0)
         fin_mes = inicio_mes + pd.offsets.MonthEnd(1) + pd.Timedelta(hours=23, minutes=50)
         
-        # Generamos la grilla temporal limitada estrictamente a ese mes cada 10 minutos fijos
         grilla_temporal = pd.date_range(start=inicio_mes, end=fin_mes, freq='10min')
         df_resultado = pd.DataFrame({'Fecha': grilla_temporal})
         
-        # Nombres legibles para los mensajes de la interfaz
         meses_nombres = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio", 
                          7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
         nombre_mes_actual = meses_nombres.get(mes_datos, "Mes Detectado")
 
-        # 7. CRUCE DIRECTO CON LA GRILLA ACOMTADA
-        df_final = pd.merge(df_resultado, df_fuente, on='Fecha', how='left')
+        # 7. !!! FUSIÓN DE MÁXIMA PRECISIÓN (merge_asof) !!!
+        # Busca hacia atrás (direction='backward') el último estado real para cada bloque de 10 min
+        df_final = pd.merge_asof(
+            df_resultado, 
+            df_fuente, 
+            on='Fecha', 
+            direction='backward'
+        )
         
-        # Arrastre vertical final sobre la grilla para los bloques de 10 minutos intermedios
-        df_final[columnas_sensores] = df_final[columnas_sensores].ffill().fillna(0)
+        # Si el inicio del mes quedó vacío antes del primer registro de la fuente, va con 0
+        df_final[columnas_sensores] = df_final[columnas_sensores].fillna(0)
 
         # 8. Forzar valores a enteros limpios (0 o 1)
         for col in columnas_sensores:
@@ -91,7 +85,7 @@ if uploaded_file is not None:
         df_final['Cambio'] = hubo_cambio.any(axis=1).map({True: 1, False: ""})
         df_final.loc[0, 'Cambio'] = "" 
 
-        # 10. SALIDA FINAL: FORMATO LATINO CON SEGUNDOS EN 00
+        # 10. FORMATO LATINO CON SEGUNDOS EN 00 PARA EXCEL
         df_final['Fecha'] = df_final['Fecha'].dt.strftime('%d/%m/%Y %H:%M:00')
 
         # 11. Mostrar vista previa en Streamlit
@@ -115,4 +109,4 @@ if uploaded_file is not None:
 
     except Exception as e:
         st.error(f"Ocurrió un error inesperado al procesar: {e}")
-
+        
