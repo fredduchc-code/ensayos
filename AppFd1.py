@@ -17,19 +17,27 @@ if uploaded_file is not None:
         df_fuente = pd.read_excel(uploaded_file, sheet_name="Fuente")
         st.success("¡Archivo cargado con éxito! Iniciando procesamiento...")
 
-        # 3. Limpieza de nombres de columnas (quitar espacios y comillas)
+        # 3. Limpieza de nombres de columnas
         df_fuente.columns = df_fuente.columns.str.strip().str.replace('"', '')
-        
-        # Forzar a que la primera columna de la izquierda sea nuestra columna de tiempo
         df_fuente.rename(columns={df_fuente.columns[0]: 'Fecha'}, inplace=True)
 
-        # 4. TRATAMIENTO SEGURO Y REDONDEO DIRECTO A CADENCIA DE 10 MINUTOS
+        # 4. !!! LEER LA FUENTE EN FORMATO LATINO ESTRICTO !!!
         df_fuente['Fecha'] = df_fuente['Fecha'].astype(str).str.strip()
-        df_fuente['Fecha'] = pd.to_datetime(df_fuente['Fecha'], dayfirst=True, errors='coerce')
+        
+        # Primero intentamos leer usando explícitamente el formato Día/Mes/Año con hora:minuto:segundo
+        # Si algunas filas difieren, 'mixed' con dayfirst=True salvará el resto sin cruzar meses y días.
+        df_fuente['Fecha'] = pd.to_datetime(
+            df_fuente['Fecha'], 
+            dayfirst=True, 
+            errors='coerce', 
+            format='mixed'
+        )
+        
+        # Eliminamos filas donde la fecha no se haya podido interpretar
         df_fuente = df_fuente.dropna(subset=['Fecha'])
         
         if len(df_fuente) == 0:
-            st.error("Error crítico: No se pudieron interpretar las fechas del archivo.")
+            st.error("Error crítico: No se pudieron interpretar las fechas del archivo. Comprobá que sigan el formato DD/MM/AAAA.")
             st.stop()
             
         # Redondeamos directamente a los 10 minutos más cercanos
@@ -45,26 +53,26 @@ if uploaded_file is not None:
         # Ordenamos cronológicamente de forma estricta la fuente
         df_fuente = df_fuente.sort_values('Fecha').reset_index(drop=True)
         
-        # !!! EL CAMBIO CLAVE !!!
-        # Hacemos el arrastre (ffill) dentro de la FUENTE primero, para que las filas del 13/01 
-        # recuerden los estados en los que venían los sensores el 12/01 antes de mezclarse con el calendario general.
+        # Rellenamos los vacíos internos de la fuente original (Mantenemos la memoria de estados)
         columnas_sensores = [col for col in df_fuente.columns if col != 'Fecha']
         df_fuente[columnas_sensores] = df_fuente[columnas_sensores].ffill().fillna(0)
         
-        # Agrupamos por si el redondeo generó duplicados, manteniendo la última actualización real
+        # Agrupamos por si el redondeo generó duplicados en el mismo bloque
         df_fuente = df_fuente.groupby('Fecha').last().reset_index()
 
-        # 6. CREAR LA GRILLA COMPLETA DE TODO EL AÑO (Cada 10 minutos)
+        # 6. CREAR LA GRILLA COMPLETA LATINA (Cada 10 minutos)
         an_datos = int(df_fuente['Fecha'].dt.year.max())
+        
+        # Definimos el rango del almanaque anual usando notación ISO estándar interna para evitar fallas
         inicio_ano = f"{an_datos}-01-01 00:00:00"
         fin_ano = f"{an_datos}-12-31 23:50:00"
         grilla_temporal = pd.date_range(start=inicio_ano, end=fin_ano, freq='10min')
         df_resultado = pd.DataFrame({'Fecha': grilla_temporal})
         
-        # 7. CRUCE DIRECTO CON LA GRILLA ANUAL (BuscarV Perfecto)
+        # 7. CRUCE DIRECTO CON LA GRILLA ANUAL
         df_final = pd.merge(df_resultado, df_fuente, on='Fecha', how='left')
         
-        # Arrastre vertical final sobre la grilla para rellenar los baches de 10 minutos vacíos
+        # Arrastre vertical final sobre la grilla para los bloques de 10 minutos intermedios
         df_final[columnas_sensores] = df_final[columnas_sensores].ffill().fillna(0)
 
         # 8. Forzar valores a enteros limpios (0 o 1)
@@ -74,13 +82,14 @@ if uploaded_file is not None:
         # 9. LÓGICA DE DETECCIÓN DE CAMBIOS DE ESTADO (TESTIGO)
         hubo_cambio = df_final[columnas_sensores].diff().fillna(0) != 0
         df_final['Cambio'] = hubo_cambio.any(axis=1).map({True: 1, False: ""})
-        df_final.loc[0, 'Cambio'] = "" # Limpiar fila inicial
+        df_final.loc[0, 'Cambio'] = "" 
 
-        # 10. FORMATO LATINO CON SEGUNDOS EN 00
+        # 10. !!! SALIDA FINAL: FORMATO LATINO CON SEGUNDOS EN 00 !!!
+        # Convierte las fechas al formato de texto 'DD/MM/AAAA HH:MM:00' exacto para Excel
         df_final['Fecha'] = df_final['Fecha'].dt.strftime('%d/%m/%Y %H:%M:00')
 
         # 11. Mostrar vista previa en Streamlit
-        st.subheader("Vista previa del Resultado Regularizado (Flujo de Memoria Corregido):")
+        st.subheader("Vista previa del Resultado Regularizado (Formato Latino Estricto):")
         st.dataframe(df_final.head(20))
         st.info(f"Total de filas generadas para el año {an_datos}: {len(df_final):,}")
         
