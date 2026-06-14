@@ -21,7 +21,7 @@ if uploaded_file is not None:
         df_fuente.columns = df_fuente.columns.str.strip().str.replace('"', '')
         df_fuente.rename(columns={df_fuente.columns[0]: 'Fecha'}, inplace=True)
 
-        # 4. LEER LA FUENTE EN FORMATO LATINO MANTENIENDO HORAS EXACTAS
+        # 4. LEER LA FUENTE EN FORMATO LATINO Y FIJAR SEGUNDOS EN 00
         df_fuente['Fecha'] = df_fuente['Fecha'].astype(str).str.strip()
         df_fuente['Fecha'] = pd.to_datetime(
             df_fuente['Fecha'], 
@@ -35,6 +35,9 @@ if uploaded_file is not None:
             st.error("Error crítico: No se pudieron interpretar las fechas del archivo.")
             st.stop()
             
+        # !!! TU PROPUESTA: Llevamos los segundos a :00 truncando al bloque de 10 min de forma fija !!!
+        df_fuente['Fecha'] = df_fuente['Fecha'].dt.floor('10min')
+            
         # 5. LIMPIEZA DE TEXTOS VACÍOS EN SENSORES
         for col in df_fuente.columns:
             if col != 'Fecha':
@@ -42,12 +45,15 @@ if uploaded_file is not None:
                 df_fuente[col] = df_fuente[col].replace(['', 'nan', 'NaN', 'None', ','], pd.NA)
                 df_fuente[col] = pd.to_numeric(df_fuente[col], errors='coerce')
 
-        # Ordenamos de forma estricta por fecha para que funcione el merge_asof
+        # Ordenamos cronológicamente antes de agrupar
         df_fuente = df_fuente.sort_values('Fecha').reset_index(drop=True)
         
-        # Completamos valores vacíos internos en la propia fuente original primero
+        # Hacemos un arrastre inicial en la fuente para que no se pierdan estados previos
         columnas_sensores = [col for col in df_fuente.columns if col != 'Fecha']
         df_fuente[columnas_sensores] = df_fuente[columnas_sensores].ffill().fillna(0)
+        
+        # Agrupamos por la nueva fecha fija de 10 minutos, quedándonos con el último cambio real
+        df_fuente = df_fuente.groupby('Fecha').last().reset_index()
 
         # 6. ACOTACIÓN DINÁMICA AL MES Y AÑO DE LA FUENTE
         fecha_base = df_fuente['Fecha'].iloc[0]
@@ -64,17 +70,11 @@ if uploaded_file is not None:
                          7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
         nombre_mes_actual = meses_nombres.get(mes_datos, "Mes Detectado")
 
-        # 7. !!! FUSIÓN DE MÁXIMA PRECISIÓN (merge_asof) !!!
-        # Busca hacia atrás (direction='backward') el último estado real para cada bloque de 10 min
-        df_final = pd.merge_asof(
-            df_resultado, 
-            df_fuente, 
-            on='Fecha', 
-            direction='backward'
-        )
+        # 7. CRUCE DIRECTO CON LA GRILLA ANUAL (BuscarV Perfecto sobre horas fijas)
+        df_final = pd.merge(df_resultado, df_fuente, on='Fecha', how='left')
         
-        # Si el inicio del mes quedó vacío antes del primer registro de la fuente, va con 0
-        df_final[columnas_sensores] = df_final[columnas_sensores].fillna(0)
+        # Arrastre vertical final sobre la grilla para cubrir los baches de 10 minutos intermedios
+        df_final[columnas_sensores] = df_final[columnas_sensores].ffill().fillna(0)
 
         # 8. Forzar valores a enteros limpios (0 o 1)
         for col in columnas_sensores:
@@ -101,7 +101,7 @@ if uploaded_file is not None:
         
         # 13. Botón de descarga
         st.download_button(
-            label=f"📥 Descargar Excel Resultado ({nombre_mes_actual})",
+            label="📥 Descargar Excel Resultado",
             data=bytes_data,
             file_name=f"Resultado_Cadencia_10min_{nombre_mes_actual}_{an_datos}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
