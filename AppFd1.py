@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import io
+import numpy as np
 
 # Configuración de la página web
 st.set_page_config(page_title="Procesador de Tendencias", layout="centered")
@@ -23,29 +24,31 @@ if uploaded_file is not None:
         # Forzar a que la primera columna de la izquierda sea nuestra columna de tiempo
         df_fuente.rename(columns={df_fuente.columns[0]: 'Fecha'}, inplace=True)
 
-        # 4. Convertir la columna Fecha de manera flexible (ideal para detectar medianoches y formatos latinos)
+        # 4. Convertir la columna Fecha de manera flexible (ideal para detectar medianoches)
         df_fuente['Fecha'] = pd.to_datetime(df_fuente['Fecha'], dayfirst=True, errors='coerce')
             
-        # Eliminamos filas donde la fecha REALMENTE sea imposible de leer o esté vacía
+        # Eliminamos filas donde la fecha REALMENTE esté vacía
         df_fuente = df_fuente.dropna(subset=['Fecha'])
         
         if len(df_fuente) == 0:
-            st.error("Error: Python no pudo interpretar las fechas de la primera columna. Asegurate de que tengan un formato válido de Fecha/Hora.")
+            st.error("Error: Python no pudo interpretar las fechas de la primera columna. Verificá el formato.")
             st.stop()
             
         # Ordenamos cronológicamente la fuente antes de procesar los sensores
         df_fuente = df_fuente.sort_values('Fecha')
         
-        # Rellenamos los vacíos internos de los sensores (0 y 1) en las filas originales de la fuente
+        # !!! LIMPIEZA DE CELDAS CON TEXTO VACÍO CORREGIDA !!!
+        # Reemplazamos celdas que tengan espacios o cadenas vacías por NaN reales de numpy
+        df_fuente.replace(r'^\s*$', np.nan, regex=True, inplace=True)
+        
+        # Ahora sí, rellenamos los vacíos internos de los sensores en orden vertical
         df_fuente.ffill(inplace=True)
         df_fuente.fillna(0, inplace=True)
 
         # 5. REDONDEO COMPATIBLE A 10 MINUTOS 
-        # Convertimos a formato de período de 10 minutos y volvemos a timestamp. 
-        # Soluciona el error anterior y es 100% compatible con cualquier versión de Pandas.
         df_fuente['Fecha'] = df_fuente['Fecha'].dt.to_period('10T').dt.to_timestamp()
         
-        # Agrupamos por minuto quedándonos con la última actualización de cada bloque
+        # Agrupamos por minuto quedándonos con la última actualización de cada bloque de 10 min
         df_fuente = df_fuente.groupby('Fecha').last().reset_index()
 
         # 6. CREAR LA GRILLA COMPLETA DE TODO EL AÑO (Cada 10 minutos)
@@ -67,7 +70,7 @@ if uploaded_file is not None:
         # 8. Forzar que los valores de los sensores queden como enteros puros (0 o 1) sin decimales
         for col in df_resultado.columns:
             if col != 'Fecha':
-                df_resultado[col] = df_resultado[col].astype(float).astype(int)
+                df_resultado[col] = pd.to_numeric(df_resultado[col], errors='coerce').fillna(0).astype(int)
         
         # Convertir las fechas a texto legible en formato LATINO para la exportación limpia a Excel
         df_resultado['Fecha'] = df_resultado['Fecha'].dt.strftime('%d/%m/%Y %H:%M:%S')
