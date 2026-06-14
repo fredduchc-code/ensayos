@@ -32,7 +32,7 @@ if uploaded_file is not None:
             st.error("Error crítico: No se pudieron interpretar las fechas del archivo.")
             st.stop()
             
-        # !!! EL GRAN TRUCO: Redondeamos directamente a los 10 minutos más cercanos !!!
+        # Redondeamos directamente a los 10 minutos más cercanos
         df_fuente['Fecha'] = df_fuente['Fecha'].dt.round('10min')
             
         # 5. LIMPIEZA DE TEXTOS VACÍOS EN SENSORES
@@ -42,10 +42,16 @@ if uploaded_file is not None:
                 df_fuente[col] = df_fuente[col].replace(['', 'nan', 'NaN', 'None', ','], pd.NA)
                 df_fuente[col] = pd.to_numeric(df_fuente[col], errors='coerce')
 
-        # Ordenamos cronológicamente
-        df_fuente = df_fuente.sort_values('Fecha')
+        # Ordenamos cronológicamente de forma estricta la fuente
+        df_fuente = df_fuente.sort_values('Fecha').reset_index(drop=True)
         
-        # Combinamos registros que caigan en el mismo bloque de 10 minutos quedándonos con el último
+        # !!! EL CAMBIO CLAVE !!!
+        # Hacemos el arrastre (ffill) dentro de la FUENTE primero, para que las filas del 13/01 
+        # recuerden los estados en los que venían los sensores el 12/01 antes de mezclarse con el calendario general.
+        columnas_sensores = [col for col in df_fuente.columns if col != 'Fecha']
+        df_fuente[columnas_sensores] = df_fuente[columnas_sensores].ffill().fillna(0)
+        
+        # Agrupamos por si el redondeo generó duplicados, manteniendo la última actualización real
         df_fuente = df_fuente.groupby('Fecha').last().reset_index()
 
         # 6. CREAR LA GRILLA COMPLETA DE TODO EL AÑO (Cada 10 minutos)
@@ -56,11 +62,9 @@ if uploaded_file is not None:
         df_resultado = pd.DataFrame({'Fecha': grilla_temporal})
         
         # 7. CRUCE DIRECTO CON LA GRILLA ANUAL (BuscarV Perfecto)
-        # Como ambos están en bloques exactos de 10 minutos, el cruce es directo y sin fallas
         df_final = pd.merge(df_resultado, df_fuente, on='Fecha', how='left')
         
-        # Arrastre vertical estricto a lo largo de las 52.560 filas del año
-        columnas_sensores = [col for col in df_final.columns if col != 'Fecha']
+        # Arrastre vertical final sobre la grilla para rellenar los baches de 10 minutos vacíos
         df_final[columnas_sensores] = df_final[columnas_sensores].ffill().fillna(0)
 
         # 8. Forzar valores a enteros limpios (0 o 1)
@@ -76,7 +80,7 @@ if uploaded_file is not None:
         df_final['Fecha'] = df_final['Fecha'].dt.strftime('%d/%m/%Y %H:%M:00')
 
         # 11. Mostrar vista previa en Streamlit
-        st.subheader("Vista previa del Resultado Regularizado (Redondeo de Fuente a 10 min):")
+        st.subheader("Vista previa del Resultado Regularizado (Flujo de Memoria Corregido):")
         st.dataframe(df_final.head(20))
         st.info(f"Total de filas generadas para el año {an_datos}: {len(df_final):,}")
         
